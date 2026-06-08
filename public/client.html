@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SMS IoT - Client PTT</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', sans-serif;
+    background: #0f1117;
+    color: #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    user-select: none;
+  }
+  .card {
+    background: #1a1d27;
+    border: 1px solid #2a2d3a;
+    border-radius: 16px;
+    padding: 40px;
+    text-align: center;
+    width: 340px;
+  }
+  h1 { font-size: 20px; color: #fff; margin-bottom: 6px; }
+  .subtitle { font-size: 13px; color: #666; margin-bottom: 30px; }
+
+  /* PTT Button */
+  .ptt-btn {
+    width: 150px;
+    height: 150px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    font-size: 50px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 20px;
+    background: #1e2130;
+    border: 3px solid #333;
+    transition: all 0.15s;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+  }
+  .ptt-btn.idle    { border-color: #333; background: #1e2130; }
+  .ptt-btn.ready   { border-color: #22c55e; background: #0f2a1a; box-shadow: 0 0 20px #22c55e44; cursor: pointer; }
+  .ptt-btn.active  {
+    border-color: #ef4444;
+    background: #2a0f0f;
+    box-shadow: 0 0 40px #ef444488;
+    transform: scale(0.95);
+  }
+  .ptt-btn.receiving {
+    border-color: #3b82f6;
+    background: #0f1a2a;
+    box-shadow: 0 0 30px #3b82f666;
+    animation: pulse 0.8s infinite;
+  }
+  .ptt-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.04); }
+  }
+
+  .ptt-label {
+    font-size: 14px;
+    color: #888;
+    margin-bottom: 6px;
+    height: 20px;
+  }
+  .ptt-hint {
+    font-size: 11px;
+    color: #444;
+    margin-bottom: 24px;
+  }
+
+  .indicators {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    margin-bottom: 20px;
+  }
+  .indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #666;
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #333;
+    transition: all 0.3s;
+  }
+  .dot.on   { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+  .dot.warn { background: #ef4444; box-shadow: 0 0 6px #ef4444; animation: pulse 0.8s infinite; }
+  .dot.blue { background: #3b82f6; box-shadow: 0 0 6px #3b82f6; }
+
+  .log {
+    background: #0f1117;
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 11px;
+    color: #555;
+    text-align: left;
+    max-height: 90px;
+    overflow-y: auto;
+    font-family: monospace;
+  }
+  .log div { padding: 2px 0; }
+  .log div.info { color: #3b82f6; }
+  .log div.ok   { color: #22c55e; }
+  .log div.warn { color: #f59e0b; }
+
+  audio { display: none; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>📱 Client PTT</h1>
+  <p class="subtitle">Press and hold to speak</p>
+
+  <button class="ptt-btn idle" id="pttBtn" disabled>🎙️</button>
+  <div class="ptt-label" id="pttLabel">Connecting...</div>
+  <div class="ptt-hint" id="pttHint">Please wait</div>
+
+  <div class="indicators">
+    <div class="indicator">
+      <div class="dot" id="dotMqtt"></div>
+      <span>MQTT</span>
+    </div>
+    <div class="indicator">
+      <div class="dot" id="dotOffice"></div>
+      <span>Office</span>
+    </div>
+    <div class="indicator">
+      <div class="dot" id="dotPeer"></div>
+      <span>Link</span>
+    </div>
+  </div>
+
+  <div class="log" id="log"></div>
+</div>
+
+<audio id="remoteAudio" autoplay playsinline></audio>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
+<script>
+// ─── CONFIG ────────────────────────────────────────────────
+const MQTT_HOST = location.hostname;   // Same machine running the server
+const MQTT_WS_PORT = 9001;             // Your Mosquitto WebSocket port
+const SIGNAL_TOPIC = 'sms/webrtc/signal';
+const ROLE = 'client';
+// ───────────────────────────────────────────────────────────
+
+let mqttClient, peerConn, localStream;
+let mqttReady = false, officeReady = false, connected = false;
+let pttActive = false;
+
+const pttBtn  = document.getElementById('pttBtn');
+const pttLabel = document.getElementById('pttLabel');
+const pttHint  = document.getElementById('pttHint');
+
+// ── Logging ──────────────────────────────────────────────
+function log(msg, type = '') {
+  const el = document.getElementById('log');
+  const d = document.createElement('div');
+  d.className = type;
+  d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── Dot helpers ───────────────────────────────────────────
+function setDot(id, on, type = 'on') {
+  const d = document.getElementById(id);
+  d.className = 'dot' + (on ? (' ' + type) : '');
+}
+
+function setBtnState(state) {
+  pttBtn.className = `ptt-btn ${state}`;
+  const labels = {
+    idle:      ['Connecting...', 'Please wait'],
+    ready:     ['Hold to Talk', 'Press and hold the button'],
+    active:    ['🔴 Transmitting', 'Release to stop'],
+    receiving: ['🔊 Office Speaking', 'Listen...'],
+    disabled:  ['Unavailable', 'Office not connected']
+  };
+  if (labels[state]) {
+    pttLabel.textContent = labels[state][0];
+    pttHint.textContent  = labels[state][1];
+  }
+}
+
+// ── MQTT ─────────────────────────────────────────────────
+function connectMQTT() {
+  mqttClient = new Paho.Client(MQTT_HOST, MQTT_WS_PORT, `sms-client-${Date.now()}`);
+
+  mqttClient.onConnectionLost = () => {
+    mqttReady = false;
+    setDot('dotMqtt', false);
+    setBtnState('idle');
+    pttBtn.disabled = true;
+    log('MQTT lost — retrying...', 'warn');
+    setTimeout(connectMQTT, 3000);
+  };
+
+  mqttClient.onMessageArrived = (msg) => {
+    try {
+      const data = JSON.parse(msg.payloadString);
+      if (data.from === ROLE) return;
+      handleSignal(data);
+    } catch (e) {}
+  };
+
+  mqttClient.connect({
+    onSuccess: () => {
+      mqttReady = true;
+      setDot('dotMqtt', true);
+      log('MQTT connected ✓', 'ok');
+      mqttClient.subscribe(SIGNAL_TOPIC);
+      // Tell office we are here
+      sendSignal({ type: 'client-ready' });
+      initMic();
+    },
+    onFailure: (err) => {
+      log(`MQTT failed: ${err.errorMessage}`, 'warn');
+      setTimeout(connectMQTT, 3000);
+    },
+    keepAliveInterval: 30,
+    useSSL: false
+  });
+}
+
+// ── Mic init ──────────────────────────────────────────────
+async function initMic() {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    // Mute by default — PTT controls this
+    localStream.getAudioTracks().forEach(t => t.enabled = false);
+    log('Microphone ready (muted until PTT)', 'ok');
+    setBtnState('idle');
+    // Now try to connect to office
+    startCall();
+  } catch (e) {
+    log(`Mic error: ${e.message}`, 'warn');
+    pttLabel.textContent = 'Mic Permission Denied';
+  }
+}
+
+// ── WebRTC ────────────────────────────────────────────────
+async function startCall() {
+  if (peerConn) peerConn.close();
+
+  peerConn = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
+
+  // Add local (muted by default) mic track
+  if (localStream) {
+    localStream.getTracks().forEach(track => peerConn.addTrack(track, localStream));
+  }
+
+  // Receive office audio (always on)
+  peerConn.ontrack = (event) => {
+    log('Office audio connected ✓', 'ok');
+    const audio = document.getElementById('remoteAudio');
+    audio.srcObject = event.streams[0];
+  };
+
+  peerConn.onicecandidate = (event) => {
+    if (event.candidate) {
+      sendSignal({ type: 'ice', candidate: event.candidate });
+    }
+  };
+
+  peerConn.onconnectionstatechange = () => {
+    const state = peerConn.connectionState;
+    log(`Peer: ${state}`);
+    if (state === 'connected') {
+      connected = true;
+      setDot('dotPeer', true, 'blue');
+      setBtnState('ready');
+      pttBtn.disabled = false;
+      log('✅ Connected to office!', 'ok');
+    } else if (state === 'disconnected' || state === 'failed') {
+      connected = false;
+      setDot('dotPeer', false);
+      setDot('dotOffice', false);
+      pttBtn.disabled = true;
+      setBtnState('idle');
+      pttLabel.textContent = 'Connection Lost';
+      log('Office disconnected — retrying in 5s', 'warn');
+      setTimeout(startCall, 5000);
+    }
+  };
+
+  // Create offer
+  const offer = await peerConn.createOffer();
+  await peerConn.setLocalDescription(offer);
+  sendSignal({ type: 'offer', sdp: peerConn.localDescription });
+  log('Sent offer to office...', 'info');
+}
+
+// ── Handle incoming signals ───────────────────────────────
+async function handleSignal(data) {
+  if (data.type === 'office-ready') {
+    setDot('dotOffice', true);
+    officeReady = true;
+    log('Office is online ✓', 'ok');
+  }
+
+  else if (data.type === 'answer') {
+    log('Received answer from office ✓', 'ok');
+    await peerConn.setRemoteDescription(new RTCSessionDescription(data.sdp));
+  }
+
+  else if (data.type === 'ice') {
+    if (peerConn) {
+      try { await peerConn.addIceCandidate(new RTCIceCandidate(data.candidate)); }
+      catch (e) {}
+    }
+  }
+}
+
+// ── PTT Controls ──────────────────────────────────────────
+function pttStart() {
+  if (!connected || !localStream || pttActive) return;
+  pttActive = true;
+  localStream.getAudioTracks().forEach(t => t.enabled = true);  // Unmute mic
+  setBtnState('active');
+  setDot('dotPeer', true, 'warn');
+  sendSignal({ type: 'ptt-on' });
+  log('PTT ON — transmitting', 'info');
+}
+
+function pttStop() {
+  if (!pttActive) return;
+  pttActive = false;
+  localStream.getAudioTracks().forEach(t => t.enabled = false); // Mute mic
+  setBtnState('ready');
+  setDot('dotPeer', true, 'blue');
+  sendSignal({ type: 'ptt-off' });
+  log('PTT OFF', 'info');
+}
+
+// Mouse events (desktop)
+pttBtn.addEventListener('mousedown',  pttStart);
+pttBtn.addEventListener('mouseup',    pttStop);
+pttBtn.addEventListener('mouseleave', pttStop);
+
+// Touch events (mobile)
+pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); pttStart(); }, { passive: false });
+pttBtn.addEventListener('touchend',   (e) => { e.preventDefault(); pttStop();  }, { passive: false });
+
+// Spacebar shortcut
+document.addEventListener('keydown', (e) => { if (e.code === 'Space' && !e.repeat) { e.preventDefault(); pttStart(); } });
+document.addEventListener('keyup',   (e) => { if (e.code === 'Space') { e.preventDefault(); pttStop(); } });
+
+// ── Send signal ───────────────────────────────────────────
+function sendSignal(data) {
+  if (!mqttReady) return;
+  const msg = new Paho.Message(JSON.stringify({ ...data, from: ROLE }));
+  msg.destinationName = SIGNAL_TOPIC;
+  msg.retained = false;
+  mqttClient.send(msg);
+}
+
+// ── Start ──────────────────────────────────────────────────
+connectMQTT();
+</script>
+</body>
+</html>
