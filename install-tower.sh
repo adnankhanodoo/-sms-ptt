@@ -52,12 +52,9 @@ log "Tower IP: $TOWER_IP"
 # ── Install dependencies ──────────────────────────────────
 info "Installing dependencies..."
 sudo apt-get update -qq
-sudo apt-get install -y -qq \
-  nodejs \
-  xvfb \
-  pulseaudio pulseaudio-utils \
-  chromium-browser \
-  curl netcat-openbsd
+sudo apt-get install -y -qq --no-install-recommends xvfb pulseaudio pulseaudio-utils chromium-browser curl netcat-openbsd
+# nodejs already installed via nodesource
+#
 log "Dependencies installed"
 
 # ── Check mic ─────────────────────────────────────────────
