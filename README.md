@@ -1,97 +1,83 @@
 # SMS IoT PTT System
-## WebRTC Push-to-Talk over MQTT
+## Push-to-Talk: Client speaks → Tower hears
 
-Zero new infrastructure — uses your existing Mosquitto MQTT broker.
+Simple, lightweight, low-latency. No WebRTC. No ICE negotiation. Just WebSocket + PCM audio.
 
 ---
 
 ## Architecture
 
 ```
-[Tower Machine - headless]         [Client Machine - browser]
-  USB Mic always on                  PTT button in browser
-  Chrome hidden (Xvfb)               Press = talk to tower
-  Streams audio 24/7                 Hears tower always
-       |                                    |
-       └──────── WebRTC audio ──────────────┘
-                      |
-              MQTT signaling
-          (your existing broker)
+[Client Browser]          [Tower Machine]
+  Press PTT button    →    Node.js server
+  Mic → PCM audio     →    Speaker plays
+  WebSocket stream    →    Instant playback
 ```
 
 ---
 
-## Setup — 3 steps
-
-### Step 1 — MQTT WebSocket (run on broker machine once)
-```bash
-curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/sms-ptt/main/setup-mqtt-ws.sh | bash
-```
-
-### Step 2 — Tower machine (headless, no monitor)
-```bash
-curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/sms-ptt/main/install-tower.sh | bash -s -- <MQTT_BROKER_IP>
-```
-Example:
-```bash
-curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/sms-ptt/main/install-tower.sh | bash -s -- 100.84.208.88
-```
-
-### Step 3 — Client machine (with browser)
-```bash
-curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/sms-ptt/main/install-client.sh | bash -s -- <TOWER_IP>
-```
-Example:
-```bash
-curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/sms-ptt/main/install-client.sh | bash -s -- 100.84.108.142
-```
-
----
-
-## What gets installed
+## Requirements
 
 ### Tower machine
-- Node.js server (port 8090)
-- Xvfb virtual display
-- PulseAudio
-- Chromium (headless, hidden)
-- 2 systemd services (auto-start on boot)
+- Ubuntu Linux
+- USB microphone (optional — tower receives audio)
+- Speaker/headphone output
+- Node.js 18+
+- NetBird VPN (for remote access)
 
-### Client machine  
-- Desktop shortcut only
-- Opens browser to tower URL
-
----
-
-## Ports used
-
-| Port | Purpose | Conflicts? |
-|------|---------|------------|
-| 8090 | PTT web server | New — no conflict |
-| 9001 | Mosquitto WebSocket | Added to existing |
-| 1883 | Mosquitto MQTT | Already exists |
+### Client machine
+- Any browser (Chrome recommended)
+- Microphone
+- Access to tower IP
 
 ---
 
-## After reboot
+## Setup — 2 steps only
 
-Tower auto-starts. Client just opens browser:
+### Step 1 — Tower machine
+```bash
+curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/-sms-ptt/main/install-tower.sh | bash
 ```
-http://<TOWER_IP>:8090/client.html
+
+### Step 2 — Client machine
+```bash
+curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/-sms-ptt/main/install-client.sh | bash -s -- <TOWER_IP>
 ```
+
+Example:
+```bash
+curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/-sms-ptt/main/install-client.sh | bash -s -- 100.84.108.142
+```
+
+---
+
+## Usage
+
+1. Tower server starts automatically on boot
+2. Client opens browser: `http://<TOWER_IP>:8090`
+3. Allow microphone permission
+4. Press and hold PTT button to speak
+5. Tower plays your voice instantly
+
+---
+
+## Ports
+
+| Port | Purpose |
+|------|---------|
+| 8090 | PTT web server + WebSocket |
 
 ---
 
 ## Troubleshoot
 
 ```bash
-# Tower logs
-sudo journalctl -u ptt-server -f
-sudo journalctl -u ptt-tower -f
+# Check service status
+systemctl --user status sms-ptt-tower
 
 # Restart
-sudo systemctl restart ptt-server ptt-tower
+systemctl --user restart sms-ptt-tower
 
-# Check health
-curl http://localhost:8090/health
+# View logs
+journalctl --user -u sms-ptt-tower -f
 ```
