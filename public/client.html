@@ -12,19 +12,20 @@
   .sub{font-size:13px;color:#666;margin-bottom:30px}
   .btn{width:150px;height:150px;border-radius:50%;border:none;cursor:pointer;font-size:50px;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;transition:all 0.15s;-webkit-tap-highlight-color:transparent;touch-action:none}
   .btn.idle{border:3px solid #333;background:#1e2130}
-  .btn.ready{border:3px solid #22c55e;background:#0f2a1a;box-shadow:0 0 20px #22c55e44}
+  .btn.ready{border:3px solid #22c55e;background:#0f2a1a;box-shadow:0 0 20px #22c55e44;cursor:pointer}
   .btn.active{border:3px solid #ef4444;background:#2a0f0f;box-shadow:0 0 40px #ef444488;transform:scale(0.95)}
-  .btn.busy{border:3px solid #f59e0b;background:#2a1f0f;animation:pulse 0.5s infinite}
+  .btn.connecting{border:3px solid #f59e0b;background:#2a1f0f;animation:pulse 1s infinite}
   .btn:disabled{opacity:.4;cursor:not-allowed}
   @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}
-  .lbl{font-size:14px;color:#888;margin-bottom:6px;height:20px}
+  .lbl{font-size:16px;font-weight:600;margin-bottom:6px}
   .hint{font-size:11px;color:#444;margin-bottom:24px}
-  .dots{display:flex;gap:12px;justify-content:center;margin-bottom:20px}
+  .dots{display:flex;gap:16px;justify-content:center;margin-bottom:20px}
   .di{display:flex;align-items:center;gap:6px;font-size:12px;color:#666}
   .dot{width:8px;height:8px;border-radius:50%;background:#333;transition:all .3s}
   .dot.on{background:#22c55e;box-shadow:0 0 6px #22c55e}
-  .dot.warn{background:#ef4444;box-shadow:0 0 6px #ef4444}
-  .log{background:#0f1117;border-radius:8px;padding:10px;font-size:11px;color:#555;text-align:left;max-height:90px;overflow-y:auto;font-family:monospace}
+  .dot.blue{background:#3b82f6;box-shadow:0 0 6px #3b82f6}
+  .dot.red{background:#ef4444;box-shadow:0 0 6px #ef4444;animation:pulse 0.8s infinite}
+  .log{background:#0f1117;border-radius:8px;padding:10px;font-size:11px;color:#555;text-align:left;max-height:80px;overflow-y:auto;font-family:monospace}
   .log .ok{color:#22c55e}.log .info{color:#3b82f6}.log .warn{color:#f59e0b}
 </style>
 </head>
@@ -37,109 +38,125 @@
   <div class="hint" id="hint">Please wait</div>
   <div class="dots">
     <div class="di"><div class="dot" id="dMic"></div><span>Mic</span></div>
-    <div class="di"><div class="dot" id="dLink"></div><span>Tower Link</span></div>
+    <div class="di"><div class="dot" id="dConn"></div><span>Connected</span></div>
+    <div class="di"><div class="dot" id="dPtt"></div><span>Transmitting</span></div>
   </div>
   <div class="log" id="log"></div>
 </div>
 <script>
 const TOWER = location.hostname;
 const MTX = 8189;
-let stream, pttPc;
-let busy = false;
+let stream, pc, track;
+let connected = false;
 
 function log(m,t=''){
   const e=document.getElementById('log'),d=document.createElement('div');
-  d.className=t; d.textContent='['+new Date().toLocaleTimeString()+'] '+m;
-  e.appendChild(d); e.scrollTop=e.scrollHeight;
+  d.className=t;d.textContent='['+new Date().toLocaleTimeString()+'] '+m;
+  e.appendChild(d);e.scrollTop=e.scrollHeight;
 }
-function dot(id,on,t='on'){document.getElementById(id).className='dot'+(on?' '+t:'');}
-function setBtn(s,l,h,en=true){
-  document.getElementById('btn').className='btn '+s;
+function dot(id,cls){document.getElementById(id).className='dot'+(cls?' '+cls:'');}
+function ui(btnCls,lbl,hint,en=true){
+  document.getElementById('btn').className='btn '+btnCls;
   document.getElementById('btn').disabled=!en;
-  document.getElementById('lbl').textContent=l;
-  document.getElementById('hint').textContent=h;
+  document.getElementById('lbl').textContent=lbl;
+  document.getElementById('hint').textContent=hint;
 }
 
-function waitIce(pc,timeout=4000){
-  return new Promise(res=>{
-    if(pc.iceGatheringState==='complete') return res();
-    const t=setTimeout(res,timeout);
+function waitIce(pc,ms=5000){
+  return new Promise(r=>{
+    if(pc.iceGatheringState==='complete')return r();
+    const t=setTimeout(r,ms);
     pc.addEventListener('icegatheringstatechange',()=>{
-      if(pc.iceGatheringState==='complete'){clearTimeout(t);res();}
+      if(pc.iceGatheringState==='complete'){clearTimeout(t);r();}
     });
   });
 }
 
-async function initMic(){
+async function connect(){
   try{
-    stream=await navigator.mediaDevices.getUserMedia({
+    // Get mic with browser processing
+    stream = await navigator.mediaDevices.getUserMedia({
       audio:{
         echoCancellation:true,
         noiseSuppression:true,
-        autoGainControl:true,
-        sampleRate:16000
-      },video:false});
-    dot('dMic',true);
+        autoGainControl:true
+      }
+    });
+    track = stream.getAudioTracks()[0];
+    track.enabled = false; // muted until PTT
+    dot('dMic','on');
     log('Mic ready','ok');
-    setBtn('ready','Hold to Talk','Press and hold');
-    document.getElementById('btn').disabled=false;
-  }catch(e){
-    log('Mic: '+e.message,'warn');
-  }
-}
+    ui('connecting','Connecting to tower...','Please wait',false);
 
-async function pttOn(){
-  if(busy||!stream) return;
-  busy=true;
-  setBtn('busy','Connecting...','Please wait',false);
-  log('Connecting to tower...','info');
-  const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
-  if(pttPc){pttPc.close();}
-  pttPc=pc;
-  try{
-    stream.getTracks().forEach(t=>pc.addTrack(t,stream));
-    const offer=await pc.createOffer();
+    // Create WebRTC connection
+    pc = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+    pc.addTrack(track, stream);
+
+    pc.onconnectionstatechange = () => {
+      log('State: '+pc.connectionState);
+      if(pc.connectionState === 'connected'){
+        connected = true;
+        dot('dConn','on');
+        ui('ready','Hold to Talk','Press and hold the button');
+        document.getElementById('btn').disabled = false;
+        log('Ready — press to talk','ok');
+      } else if(['disconnected','failed'].includes(pc.connectionState)){
+        connected = false;
+        dot('dConn','');
+        dot('dPtt','');
+        ui('connecting','Reconnecting...','Please wait',false);
+        log('Lost connection — reconnecting...','warn');
+        setTimeout(connect, 3000);
+      }
+    };
+
+    const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     await waitIce(pc);
-    if(pc!==pttPc){pc.close();return;}
-    const r=await fetch(`http://${TOWER}:${MTX}/client/whip`,{
+
+    const r = await fetch(`http://${TOWER}:${MTX}/client/whip`,{
       method:'POST',
       headers:{'Content-Type':'application/sdp'},
-      body:pc.localDescription.sdp});
+      body:pc.localDescription.sdp
+    });
     if(!r.ok) throw new Error('WHIP '+r.status);
-    if(pc!==pttPc){pc.close();return;}
-    await pc.setRemoteDescription({type:'answer',sdp:await r.text()});
-    dot('dLink',true,'warn');
-    setBtn('active','🔴 Transmitting','Release to stop',true);
-    log('PTT ON — tower hearing you','ok');
-  }catch(e){
-    log('PTT err: '+e.message,'warn');
-    busy=false;
-    pc.close();
-    if(pttPc===pc) pttPc=null;
-    setBtn('ready','Hold to Talk','Press and hold');
+    await pc.setRemoteDescription({type:'answer', sdp:await r.text()});
+    log('WHIP connected','ok');
+
+  } catch(e){
+    log('Error: '+e.message,'warn');
+    ui('idle','Connection failed','Retrying...',false);
+    setTimeout(connect, 5000);
   }
 }
 
-async function pttOff(){
-  if(!busy) return;
-  busy=false;
-  if(pttPc){pttPc.close();pttPc=null;}
-  dot('dLink',false);
-  setBtn('ready','Hold to Talk','Press and hold');
+// PTT — instant mute/unmute, no new connection
+function pttOn(){
+  if(!connected || !track) return;
+  track.enabled = true;
+  dot('dPtt','red');
+  ui('active','🔴 Transmitting','Release to stop');
+  log('PTT ON','info');
+}
+
+function pttOff(){
+  if(!track) return;
+  track.enabled = false;
+  dot('dPtt','');
+  if(connected) ui('ready','Hold to Talk','Press and hold the button');
   log('PTT OFF','info');
 }
 
-const btn=document.getElementById('btn');
-btn.addEventListener('mousedown',pttOn);
-btn.addEventListener('mouseup',pttOff);
-btn.addEventListener('mouseleave',pttOff);
-btn.addEventListener('touchstart',e=>{e.preventDefault();pttOn();},{passive:false});
-btn.addEventListener('touchend',e=>{e.preventDefault();pttOff();},{passive:false});
-document.addEventListener('keydown',e=>{if(e.code==='Space'&&!e.repeat){e.preventDefault();pttOn();}});
-document.addEventListener('keyup',e=>{if(e.code==='Space'){e.preventDefault();pttOff();}});
+const btn = document.getElementById('btn');
+btn.addEventListener('mousedown', pttOn);
+btn.addEventListener('mouseup', pttOff);
+btn.addEventListener('mouseleave', pttOff);
+btn.addEventListener('touchstart', e=>{e.preventDefault();pttOn();},{passive:false});
+btn.addEventListener('touchend', e=>{e.preventDefault();pttOff();},{passive:false});
+document.addEventListener('keydown', e=>{if(e.code==='Space'&&!e.repeat){e.preventDefault();pttOn();}});
+document.addEventListener('keyup', e=>{if(e.code==='Space'){e.preventDefault();pttOff();}});
 
-initMic();
+connect();
 </script>
 </body>
 </html>
