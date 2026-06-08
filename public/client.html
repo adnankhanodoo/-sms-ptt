@@ -118,7 +118,7 @@ async function pttOff(){
   setBtn('ready','Hold to Talk','Press and hold');
   dot('dPtt',false);
   log('PTT OFF','info');
-  if(pttPeer){pttPeer.close();pttPeer=null;}
+  setTimeout(()=>{if(pttPeer){pttPeer.close();pttPeer=null;}},1000);
 }
 
 const btn=document.getElementById('btn');
