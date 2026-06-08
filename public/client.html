@@ -12,16 +12,18 @@
   .sub{font-size:13px;color:#666;margin-bottom:30px}
   .btn{width:150px;height:150px;border-radius:50%;border:none;cursor:pointer;font-size:50px;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;transition:all 0.15s;-webkit-tap-highlight-color:transparent;touch-action:none}
   .btn.idle{border:3px solid #333;background:#1e2130}
+  .btn.connecting{border:3px solid #f59e0b;background:#2a1f0f;animation:pulse 1s infinite}
   .btn.ready{border:3px solid #22c55e;background:#0f2a1a;box-shadow:0 0 20px #22c55e44}
   .btn.active{border:3px solid #ef4444;background:#2a0f0f;box-shadow:0 0 40px #ef444488;transform:scale(0.95)}
   .btn:disabled{opacity:.4;cursor:not-allowed}
+  @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}
   .lbl{font-size:14px;color:#888;margin-bottom:6px;height:20px}
   .hint{font-size:11px;color:#444;margin-bottom:24px}
   .dots{display:flex;gap:12px;justify-content:center;margin-bottom:20px}
   .di{display:flex;align-items:center;gap:6px;font-size:12px;color:#666}
   .dot{width:8px;height:8px;border-radius:50%;background:#333;transition:all .3s}
   .dot.on{background:#22c55e;box-shadow:0 0 6px #22c55e}
-  .dot.warn{background:#ef4444;box-shadow:0 0 6px #ef4444}
+  .dot.warn{background:#ef4444;box-shadow:0 0 6px #ef4444;animation:pulse 0.8s infinite}
   .dot.blue{background:#3b82f6;box-shadow:0 0 6px #3b82f6}
   .log{background:#0f1117;border-radius:8px;padding:10px;font-size:11px;color:#555;text-align:left;max-height:90px;overflow-y:auto;font-family:monospace}
   .log .ok{color:#22c55e}.log .info{color:#3b82f6}.log .warn{color:#f59e0b}
@@ -32,10 +34,10 @@
   <h1>📱 Client PTT</h1>
   <p class="sub">Press and hold to speak</p>
   <button class="btn idle" id="btn" disabled>🎙️</button>
-  <div class="lbl" id="lbl">Connecting...</div>
+  <div class="lbl" id="lbl">Starting...</div>
   <div class="hint" id="hint">Please wait</div>
   <div class="dots">
-    <div class="di"><div class="dot" id="dTower"></div><span>Tower Audio</span></div>
+    <div class="di"><div class="dot" id="dTower"></div><span>Tower</span></div>
     <div class="di"><div class="dot" id="dMic"></div><span>Mic</span></div>
     <div class="di"><div class="dot" id="dPtt"></div><span>PTT</span></div>
   </div>
@@ -44,82 +46,131 @@
 <audio id="towerAudio" autoplay playsinline></audio>
 <script>
 const TOWER_IP = location.hostname;
-const MEDIAMTX_PORT = 8189;
-let localStream, pttPeer, ptt=false;
+const MTX = 8189;
+let localStream, towerPc, pttPc, pttTrack;
+let towerReady=false, pttReady=false, ptt=false;
 
 function log(m,t=''){const e=document.getElementById('log'),d=document.createElement('div');d.className=t;d.textContent='['+new Date().toLocaleTimeString()+'] '+m;e.appendChild(d);e.scrollTop=e.scrollHeight;}
 function dot(id,on,t='on'){document.getElementById(id).className='dot'+(on?' '+t:'');}
-function setBtn(s,l,h){document.getElementById('btn').className='btn '+s;document.getElementById('lbl').textContent=l;document.getElementById('hint').textContent=h;}
+function setBtn(s,l,h,en=true){
+  document.getElementById('btn').className='btn '+s;
+  document.getElementById('btn').disabled=!en;
+  document.getElementById('lbl').textContent=l;
+  document.getElementById('hint').textContent=h;
+}
 
-async function connectTowerAudio(){
-  try {
-    log('Connecting to tower audio...','info');
-    const pc = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
-    pc.addTransceiver('audio', {direction:'recvonly'});
-    pc.ontrack = e => {
-      log('Tower audio connected','ok');
-      document.getElementById('towerAudio').srcObject = e.streams[0];
+// ── Tower audio (WHEP) — connect once, keep alive ─────────
+async function connectTower(){
+  try{
+    towerPc = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+    towerPc.addTransceiver('audio',{direction:'recvonly'});
+    towerPc.ontrack = e=>{
+      document.getElementById('towerAudio').srcObject=e.streams[0];
       dot('dTower',true,'blue');
+      towerReady=true;
+      log('Tower audio connected','ok');
+      checkReady();
     };
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    const resp = await fetch(`http://${TOWER_IP}:${MEDIAMTX_PORT}/tower/whep`,{
-      method:'POST',headers:{'Content-Type':'application/sdp'},body:offer.sdp});
-    if(!resp.ok) throw new Error('WHEP failed: '+resp.status);
-    const answer = await resp.text();
-    await pc.setRemoteDescription({type:'answer',sdp:answer});
-    log('Tower stream ready','ok');
-  } catch(e) {
-    log('Tower audio error: '+e.message,'warn');
-    setTimeout(connectTowerAudio,5000);
+    towerPc.onconnectionstatechange=()=>{
+      if(towerPc.connectionState==='failed'||towerPc.connectionState==='disconnected'){
+        dot('dTower',false); towerReady=false;
+        log('Tower disconnected — retrying...','warn');
+        setTimeout(connectTower,3000);
+      }
+    };
+    // Gather all ICE candidates first
+    const offer=await towerPc.createOffer();
+    await towerPc.setLocalDescription(offer);
+    await waitIce(towerPc);
+    const r=await fetch(`http://${TOWER_IP}:${MTX}/tower/whep`,{
+      method:'POST',headers:{'Content-Type':'application/sdp'},
+      body:towerPc.localDescription.sdp});
+    if(!r.ok) throw new Error('WHEP '+r.status);
+    await towerPc.setRemoteDescription({type:'answer',sdp:await r.text()});
+    log('Tower WHEP done','ok');
+  }catch(e){
+    log('Tower error: '+e.message,'warn');
+    setTimeout(connectTower,5000);
   }
 }
 
-async function initMic(){
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({audio:true,video:false});
-    localStream.getAudioTracks().forEach(t=>t.enabled=false);
+// ── PTT (WHIP) — connect once, keep alive, mute/unmute ────
+async function connectPTT(){
+  try{
+    localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
     dot('dMic',true);
     log('Mic ready','ok');
-    setBtn('ready','Hold to Talk','Press and hold the button');
-    document.getElementById('btn').disabled=false;
-  } catch(e) {
-    log('Mic error: '+e.message,'warn');
+
+    pttPc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+    pttTrack=localStream.getAudioTracks()[0];
+    pttTrack.enabled=false; // muted until PTT pressed
+    pttPc.addTrack(pttTrack,localStream);
+
+    pttPc.onconnectionstatechange=()=>{
+      const s=pttPc.connectionState;
+      log('PTT peer: '+s);
+      if(s==='connected'){
+        pttReady=true;
+        dot('dPtt',true,'on');
+        log('PTT link ready','ok');
+        checkReady();
+      } else if(s==='failed'||s==='disconnected'){
+        pttReady=false;
+        dot('dPtt',false);
+        log('PTT link lost — retrying...','warn');
+        setTimeout(connectPTT,3000);
+      }
+    };
+
+    const offer=await pttPc.createOffer();
+    await pttPc.setLocalDescription(offer);
+    await waitIce(pttPc);
+    const r=await fetch(`http://${TOWER_IP}:${MTX}/client/whip`,{
+      method:'POST',headers:{'Content-Type':'application/sdp'},
+      body:pttPc.localDescription.sdp});
+    if(!r.ok) throw new Error('WHIP '+r.status);
+    await pttPc.setRemoteDescription({type:'answer',sdp:await r.text()});
+    log('PTT WHIP done','ok');
+  }catch(e){
+    log('PTT setup error: '+e.message,'warn');
+    setTimeout(connectPTT,5000);
   }
 }
 
-async function pttOn(){
-  if(ptt||!localStream) return;
+// Wait for ICE gathering to complete
+function waitIce(pc){
+  return new Promise(resolve=>{
+    if(pc.iceGatheringState==='complete') return resolve();
+    pc.onicegatheringstatechange=()=>{
+      if(pc.iceGatheringState==='complete') resolve();
+    };
+    setTimeout(resolve,3000); // max 3s
+  });
+}
+
+function checkReady(){
+  if(towerReady && pttReady){
+    setBtn('ready','Hold to Talk','Press and hold the button');
+  }
+}
+
+// ── PTT controls — just mute/unmute track ─────────────────
+function pttOn(){
+  if(!pttReady||!pttTrack||ptt) return;
   ptt=true;
-  if(pttPeer){pttPeer.close();pttPeer=null;}
-  localStream.getAudioTracks().forEach(t=>t.enabled=true);
+  pttTrack.enabled=true;
   setBtn('active','🔴 Transmitting','Release to stop');
   dot('dPtt',true,'warn');
   log('PTT ON','info');
-  try {
-    pttPeer = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
-    localStream.getTracks().forEach(t=>pttPeer.addTrack(t,localStream));
-    const offer = await pttPeer.createOffer();
-    await pttPeer.setLocalDescription(offer);
-    const resp = await fetch(`http://${TOWER_IP}:${MEDIAMTX_PORT}/client/whip`,{
-      method:'POST',headers:{'Content-Type':'application/sdp'},body:offer.sdp});
-    if(!resp.ok) throw new Error('WHIP failed: '+resp.status);
-    const answer = await resp.text();
-    if(pttPeer) await pttPeer.setRemoteDescription({type:'answer',sdp:answer});
-    log('PTT publishing','ok');
-  } catch(e) {
-    log('PTT error: '+e.message,'warn');
-  }
 }
 
-async function pttOff(){
+function pttOff(){
   if(!ptt) return;
   ptt=false;
-  localStream.getAudioTracks().forEach(t=>t.enabled=false);
+  if(pttTrack) pttTrack.enabled=false;
   setBtn('ready','Hold to Talk','Press and hold');
-  dot('dPtt',false);
+  dot('dPtt',true,'on');
   log('PTT OFF','info');
-  setTimeout(()=>{if(pttPeer){pttPeer.close();pttPeer=null;}},1000);
 }
 
 const btn=document.getElementById('btn');
@@ -131,8 +182,9 @@ btn.addEventListener('touchend',e=>{e.preventDefault();pttOff();},{passive:false
 document.addEventListener('keydown',e=>{if(e.code==='Space'&&!e.repeat){e.preventDefault();pttOn();}});
 document.addEventListener('keyup',e=>{if(e.code==='Space'){e.preventDefault();pttOff();}});
 
-connectTowerAudio();
-initMic();
+setBtn('idle','Connecting...','Please wait',false);
+connectTower();
+connectPTT();
 </script>
 </body>
 </html>
