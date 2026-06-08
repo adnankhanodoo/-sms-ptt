@@ -91,6 +91,7 @@ async function initMic(){
 async function pttOn(){
   if(ptt||!localStream) return;
   ptt=true;
+  if(pttPeer){pttPeer.close();pttPeer=null;}
   localStream.getAudioTracks().forEach(t=>t.enabled=true);
   setBtn('active','🔴 Transmitting','Release to stop');
   dot('dPtt',true,'warn');
