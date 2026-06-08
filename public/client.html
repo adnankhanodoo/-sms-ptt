@@ -93,26 +93,30 @@ async function pttOn(){
   busy=true;
   setBtn('busy','Connecting...','Please wait',false);
   log('Connecting to tower...','info');
+  const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+  if(pttPc){pttPc.close();}
+  pttPc=pc;
   try{
-    if(pttPc){pttPc.close();pttPc=null;}
-    pttPc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
-    stream.getTracks().forEach(t=>pttPc.addTrack(t,stream));
-    const offer=await pttPc.createOffer();
-    await pttPc.setLocalDescription(offer);
-    await waitIce(pttPc);
+    stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+    const offer=await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await waitIce(pc);
+    if(pc!==pttPc){pc.close();return;}
     const r=await fetch(`http://${TOWER}:${MTX}/client/whip`,{
       method:'POST',
       headers:{'Content-Type':'application/sdp'},
-      body:pttPc.localDescription.sdp});
+      body:pc.localDescription.sdp});
     if(!r.ok) throw new Error('WHIP '+r.status);
-    await pttPc.setRemoteDescription({type:'answer',sdp:await r.text()});
+    if(pc!==pttPc){pc.close();return;}
+    await pc.setRemoteDescription({type:'answer',sdp:await r.text()});
     dot('dLink',true,'warn');
     setBtn('active','🔴 Transmitting','Release to stop',true);
     log('PTT ON — tower hearing you','ok');
   }catch(e){
     log('PTT err: '+e.message,'warn');
     busy=false;
-    if(pttPc){pttPc.close();pttPc=null;}
+    pc.close();
+    if(pttPc===pc) pttPc=null;
     setBtn('ready','Hold to Talk','Press and hold');
   }
 }
