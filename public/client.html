@@ -104,7 +104,7 @@ async function pttOn(){
       method:'POST',headers:{'Content-Type':'application/sdp'},body:offer.sdp});
     if(!resp.ok) throw new Error('WHIP failed: '+resp.status);
     const answer = await resp.text();
-    await pttPeer.setRemoteDescription({type:'answer',sdp:answer});
+    if(pttPeer) await pttPeer.setRemoteDescription({type:'answer',sdp:answer});
     log('PTT publishing','ok');
   } catch(e) {
     log('PTT error: '+e.message,'warn');
