@@ -332,6 +332,8 @@ connect();
 </html>
 CLIENTEOF
 
+curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/-sms-ptt/main/public/tower.html -o public/tower.html
+curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/-sms-ptt/main/public/client.html -o public/client.html
 log "HTML files written"
 
 # ── npm install ───────────────────────────────────────────
