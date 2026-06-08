@@ -53,7 +53,7 @@ log "Tower IP: $TOWER_IP"
 info "Installing dependencies..."
 sudo apt-get update -qq
 sudo apt-get install -y -qq \
-  nodejs npm \
+  nodejs \
   xvfb \
   pulseaudio pulseaudio-utils \
   chromium-browser \
